@@ -33,13 +33,17 @@ test: python test_LA_semi_contrast.py
 
 Please consider citing this project in your publications if it helps your research. The following is a BibTeX reference. The BibTeX entry requires the url LaTeX package.
 
-    @article{liu2022scc,
-      title={A Contrastive Consistency Semi-supervised Left Atrium Segmentation Model},
-      author={Yashu Liu, Wei Wang, Gongning Luo, Kuanquan Wang and Shuo Li},
-      journal={Computerized Medical Imaging and Graphics},
-      publisher={Elsevier}
-      doi={10.1016/j.compmedimag.2022.102092}
-    }
+    @article{LIU2022102092,
+        title = {A contrastive consistency semi-supervised left atrium segmentation model},
+        journal = {Computerized Medical Imaging and Graphics},
+        volume = {99},
+        pages = {102092},
+        year = {2022},
+        issn = {0895-6111},
+        doi = {https://doi.org/10.1016/j.compmedimag.2022.102092},
+        url = {https://www.sciencedirect.com/science/article/pii/S0895611122000659},
+    ｝
+
 
 ## Acknowledgment
 The development of this project is based on [SegWithDistMap](https://github.com/JunMa11/SegWithDistMap)
