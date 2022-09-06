@@ -1,13 +1,14 @@
 import torch
-from torch import nn
+from torch import nn, norm
 import torch.nn.functional as F
 from torch.nn.modules.conv import Conv3d
-from networks.networks_other import init_weights
+from torch.distributions.uniform import Uniform
 
 class ConvBlock(nn.Module):
-    def __init__(self, n_stages, n_filters_in, n_filters_out, normalization='none'):
+    def __init__(self, n_stages, n_filters_in, n_filters_out, normalization='none', isrec=False):
         super(ConvBlock, self).__init__()
-
+        if isrec:
+            normalization = 'batchnorm'
         ops = []
         for i in range(n_stages):
             if i==0:
@@ -94,9 +95,10 @@ class DownsamplingConvBlock(nn.Module):
 
 
 class UpsamplingDeconvBlock(nn.Module):
-    def __init__(self, n_filters_in, n_filters_out, stride=2, normalization='none'):
+    def __init__(self, n_filters_in, n_filters_out, stride=2, normalization='none',isrec=False):
         super(UpsamplingDeconvBlock, self).__init__()
-
+        if isrec:
+            normalization='batchnorm'
         ops = []
         if normalization != 'none':
             ops.append(nn.ConvTranspose3d(n_filters_in, n_filters_out, stride, padding=0, stride=stride))
@@ -144,13 +146,11 @@ class Upsampling(nn.Module):
         return x
 
 
-class VNet(nn.Module):
-    def __init__(self, n_channels=3, n_classes=2, n_filters=16, normalization='none', has_dropout=False, has_triup=False,has_ddecoder=True):
-        super(VNet, self).__init__()
+class VNet_Encoder(nn.Module):
+    def __init__(self, n_channels=3, n_filters=16, normalization='none', has_dropout=False):
+        super(VNet_Encoder, self).__init__()
         self.has_dropout = has_dropout
-        self.has_triup = has_triup
-        self.has_ddecoder = has_ddecoder # 12111631
-
+        
         self.block_one = ConvBlock(1, n_channels, n_filters, normalization=normalization)
         self.block_one_dw = DownsamplingConvBlock(n_filters, 2 * n_filters, normalization=normalization)
 
@@ -164,25 +164,6 @@ class VNet(nn.Module):
         self.block_four_dw = DownsamplingConvBlock(n_filters * 8, n_filters * 16, normalization=normalization)
 
         self.block_five = ConvBlock(3, n_filters * 16, n_filters * 16, normalization=normalization)
-        self.block_five_up = UpsamplingDeconvBlock(n_filters * 16, n_filters * 8, normalization=normalization)
-        self.block_five_up_tri = Upsampling(n_filters * 16, n_filters * 8, normalization=normalization)
-
-
-        self.block_six = ConvBlock(3, n_filters * 8, n_filters * 8, normalization=normalization)
-        self.block_six_up = UpsamplingDeconvBlock(n_filters * 8, n_filters * 4, normalization=normalization)
-        self.block_six_up_tri = Upsampling(n_filters * 8, n_filters * 4, normalization=normalization)
-
-        self.block_seven = ConvBlock(3, n_filters * 4, n_filters * 4, normalization=normalization)
-        self.block_seven_up = UpsamplingDeconvBlock(n_filters * 4, n_filters * 2, normalization=normalization)
-        self.block_seven_up_tri = Upsampling(n_filters * 4, n_filters * 2, normalization=normalization)
-
-        self.block_eight = ConvBlock(2, n_filters * 2, n_filters * 2, normalization=normalization)
-        self.block_eight_up = UpsamplingDeconvBlock(n_filters * 2, n_filters, normalization=normalization)
-        self.block_eight_up_tri = Upsampling(n_filters * 2, n_filters, normalization=normalization)
-
-        self.block_nine = ConvBlock(1, n_filters, n_filters, normalization=normalization)
-        self.out_conv = nn.Conv3d(n_filters, n_classes, 1, padding=0)
-
         self.dropout = nn.Dropout3d(p=0.5, inplace=False)
         # self.__init_weight()
         # for m in self.modules():
@@ -191,7 +172,9 @@ class VNet(nn.Module):
         #     elif isinstance(m, nn.BatchNorm3d):
         #         init_weights(m, init_type='kaiming')
 
-    def encoder(self, input):
+
+
+    def forward(self, input, turnoff_drop=False):
         x1 = self.block_one(input)
         x1_dw = self.block_one_dw(x1)
 
@@ -208,117 +191,8 @@ class VNet(nn.Module):
         # x5 = F.dropout3d(x5, p=0.5, training=True)
         if self.has_dropout:
             x5 = self.dropout(x5)
-
         res = [x1, x2, x3, x4, x5]
-
         return res
-
-    def decoder_1(self, features):
-        # 预测分支1
-        x1 = features[0]
-        x2 = features[1]
-        x3 = features[2]
-        x4 = features[3]
-        x5 = features[4]
-
-        x5_up = self.block_five_up(x5)
-        x5_up = x5_up + x4
-
-        x6 = self.block_six(x5_up)
-        x6_up = self.block_six_up(x6)
-        x6_up = x6_up + x3
-
-        x7 = self.block_seven(x6_up)
-        x7_up = self.block_seven_up(x7)
-        x7_up = x7_up + x2
-
-        x8 = self.block_eight(x7_up)
-        x8_up = self.block_eight_up(x8)
-        x8_up = x8_up + x1
-        x9 = self.block_nine(x8_up)
-        # x9 = F.dropout3d(x9, p=0.5, training=True)
-        if self.has_dropout:
-            x9 = self.dropout(x9)
-        out = self.out_conv(x9)
-        return out
-
-
-    def decoder_2(self, features):
-        # 预测分支2 与分支1相同的结构
-        x1 = features[0]
-        x2 = features[1]
-        x3 = features[2]
-        x4 = features[3]
-        x5 = features[4]
-
-        x5_up = self.block_five_up(x5)
-        x5_up = x5_up + x4
-
-        x6 = self.block_six(x5_up)
-        x6_up = self.block_six_up(x6)
-        x6_up = x6_up + x3
-
-        x7 = self.block_seven(x6_up)
-        x7_up = self.block_seven_up(x7)
-        x7_up = x7_up + x2
-
-        x8 = self.block_eight(x7_up)
-        x8_up = self.block_eight_up(x8)
-        x8_up = x8_up + x1
-        x9 = self.block_nine(x8_up)
-        # x9 = F.dropout3d(x9, p=0.5, training=True)
-        if self.has_dropout:
-            x9 = self.dropout(x9)
-        out = self.out_conv(x9)
-        return out
-
-
-    def decoder_3(self, features):
-        # 预测分支3 使用插值上采样
-        x1 = features[0]
-        x2 = features[1]
-        x3 = features[2]
-        x4 = features[3]
-        x5 = features[4]
-
-        x5_up = self.block_five_up_tri(x5)
-        x5_up = x5_up + x4
-
-        x6 = self.block_six(x5_up)
-        x6_up = self.block_six_up_tri(x6)
-        x6_up = x6_up + x3
-
-        x7 = self.block_seven(x6_up)
-        x7_up = self.block_seven_up_tri(x7)
-        x7_up = x7_up + x2
-
-        x8 = self.block_eight(x7_up)
-        x8_up = self.block_eight_up_tri(x8)
-        x8_up = x8_up + x1
-        x9 = self.block_nine(x8_up)
-        # x9 = F.dropout3d(x9, p=0.5, training=True)
-        if self.has_dropout:
-            x9 = self.dropout(x9)
-        out = self.out_conv(x9)
-        return out
-
-
-    def forward(self, input, turnoff_drop=False):
-        if turnoff_drop:
-            has_dropout = self.has_dropout
-            self.has_dropout = False
-        features = self.encoder(input)
-        out_1 = self.decoder_1(features)
-        if self.has_triup:
-            out_2 = self.decoder_3(features)
-        else:
-            out_2 = self.decoder_2(features)
-        if turnoff_drop:
-            self.has_dropout = has_dropout
-        if self.has_ddecoder:
-            return out_1, out_2
-        else:
-            return out_1
 
     # def __init_weight(self):
     #     for m in self.modules():
@@ -327,9 +201,220 @@ class VNet(nn.Module):
     #         elif isinstance(m, nn.BatchNorm3d):
     #             m.weight.data.fill_(1)
     #             m.bias.data.zero_()
+class MainDecoder(nn.Module):
+    def __init__(self,n_classes=2, n_filters=16, normalization='batchnorm', has_dropout=False):
+        super(MainDecoder, self).__init__()
+        # self.upsample = upsample(conv_in_ch, num_classes, upscale=upscale)
+        self.has_dropout = has_dropout
+
+        self.block_five = ConvBlock(3, n_filters * 16, n_filters * 16, normalization=normalization)
+        self.block_five_up = UpsamplingDeconvBlock(n_filters * 16, n_filters * 8, normalization=normalization)
+
+        self.block_six = ConvBlock(3, n_filters * 8, n_filters * 8, normalization=normalization)
+        self.block_six_up = UpsamplingDeconvBlock(n_filters * 8, n_filters * 4, normalization=normalization)
+
+        self.block_seven = ConvBlock(3, n_filters * 4, n_filters * 4, normalization=normalization)
+        self.block_seven_up = UpsamplingDeconvBlock(n_filters * 4, n_filters * 2, normalization=normalization)
+
+        self.block_eight = ConvBlock(2, n_filters * 2, n_filters * 2, normalization=normalization)
+        self.block_eight_up = UpsamplingDeconvBlock(n_filters * 2, n_filters, normalization=normalization)
+
+        self.block_nine = ConvBlock(1, n_filters, n_filters, normalization=normalization)
+        self.out_conv = nn.Conv3d(n_filters, n_classes, 1, padding=0)
+
+        self.dropout = nn.Dropout3d(p=0.5, inplace=False)
+
+    def forward(self, features):
+        # 预测分支3 使用插值上采样
+        x1 = features[0]
+        x2 = features[1]
+        x3 = features[2]
+        x4 = features[3]
+        x5 = features[4]
+
+        x5_up = self.block_five_up(x5)
+        x5_up = x5_up + x4
+
+        x6 = self.block_six(x5_up)
+        x6_up = self.block_six_up(x6)
+        x6_up = x6_up + x3
+
+        x7 = self.block_seven(x6_up)
+        x7_up = self.block_seven_up(x7)
+        x7_up = x7_up + x2
+
+        x8 = self.block_eight(x7_up)
+        x8_up = self.block_eight_up(x8)
+        x8_up = x8_up + x1
+        x9 = self.block_nine(x8_up)
+        # x9 = F.dropout3d(x9, p=0.5, training=True)
+        if self.has_dropout:
+            x9 = self.dropout(x9)
+        out = self.out_conv(x9)
+        return out
+    
+class SDMDecoder(nn.Module):
+    def __init__(self, n_filters=16, normalization='batchnorm', has_dropout=False):
+        super(SDMDecoder, self).__init__()
+        # self.upsample = upsample(conv_in_ch, num_classes, upscale=upscale)
+        self.has_dropout = has_dropout
+
+        self.block_five = ConvBlock(3, n_filters * 16, n_filters * 16, normalization=normalization)
+        self.block_five_up = UpsamplingDeconvBlock(n_filters * 16, n_filters * 8, normalization=normalization)
+
+        self.block_six = ConvBlock(3, n_filters * 8, n_filters * 8, normalization=normalization)
+        self.block_six_up = UpsamplingDeconvBlock(n_filters * 8, n_filters * 4, normalization=normalization)
+
+        self.block_seven = ConvBlock(3, n_filters * 4, n_filters * 4, normalization=normalization)
+        self.block_seven_up = UpsamplingDeconvBlock(n_filters * 4, n_filters * 2, normalization=normalization)
+
+        self.block_eight = ConvBlock(2, n_filters * 2, n_filters * 2, normalization=normalization)
+        self.block_eight_up = UpsamplingDeconvBlock(n_filters * 2, n_filters, normalization=normalization)
+
+        self.block_nine = ConvBlock(1, n_filters, n_filters, normalization=normalization)
+        self.out_conv = nn.Conv3d(n_filters, 1, 1, padding=0)
+
+        self.dropout = nn.Dropout3d(p=0.5, inplace=False)
+
+    def forward(self, features):
+        # 预测分支3 使用插值上采样
+        x1 = features[0]
+        x2 = features[1]
+        x3 = features[2]
+        x4 = features[3]
+        x5 = features[4]
+
+        x5_up = self.block_five_up(x5)
+        x5_up = x5_up + x4
+
+        x6 = self.block_six(x5_up)
+        x6_up = self.block_six_up(x6)
+        x6_up = x6_up + x3
+
+        x7 = self.block_seven(x6_up)
+        x7_up = self.block_seven_up(x7)
+        x7_up = x7_up + x2
+
+        x8 = self.block_eight(x7_up)
+        x8_up = self.block_eight_up(x8)
+        x8_up = x8_up + x1
+        x9 = self.block_nine(x8_up)
+        # x9 = F.dropout3d(x9, p=0.5, training=True)
+        if self.has_dropout:
+            x9 = self.dropout(x9)
+        out = self.out_conv(x9)
+        return out
+
+class RecDecoder(nn.Module):
+    def __init__(self, n_filters=16, normalization='batchnorm', has_dropout=False):
+        super(RecDecoder, self).__init__()
+        # self.upsample = upsample(conv_in_ch, num_classes, upscale=upscale)
+        self.has_dropout = has_dropout
+
+        self.block_five = ConvBlock(3, n_filters * 16, n_filters * 16, normalization=normalization)
+        self.block_five_up = UpsamplingDeconvBlock(n_filters * 16, n_filters * 8, normalization=normalization)
+
+        self.block_six = ConvBlock(3, n_filters * 8, n_filters * 8, normalization=normalization)
+        self.block_six_up = UpsamplingDeconvBlock(n_filters * 8, n_filters * 4, normalization=normalization)
+
+        self.block_seven = ConvBlock(3, n_filters * 4, n_filters * 4, normalization=normalization)
+        self.block_seven_up = UpsamplingDeconvBlock(n_filters * 4, n_filters * 2, normalization=normalization)
+
+        self.block_eight = ConvBlock(2, n_filters * 2, n_filters * 2, normalization=normalization)
+        self.block_eight_up = UpsamplingDeconvBlock(n_filters * 2, n_filters, normalization=normalization)
+
+        self.block_nine = ConvBlock(1, n_filters, n_filters, normalization=normalization)
+        self.out_rec_conv_2 = nn.Conv3d(n_filters, 2, 1, padding=0)# 输出truth_img, bias_img
+        self.out_rec_conv_1 = nn.Conv3d(n_filters, 1, 1, padding=0)# 输出rec_img
+
+        self.dropout = nn.Dropout3d(p=0.5, inplace=False)
+
+    def forward(self, features):
+        # x = self.upsample(x)
+        # return x
+        x1 = features[0]
+        x2 = features[1]
+        x3 = features[2]
+        x4 = features[3]
+        x5 = features[4]
+
+        x5_up = self.block_five_up(x5)
+        x5_up = x5_up + x4
+
+        x6 = self.block_six(x5_up)
+        x6_up = self.block_six_up(x6)
+        x6_up = x6_up + x3
+
+        x7 = self.block_seven(x6_up)
+        x7_up = self.block_seven_up(x7)
+        x7_up = x7_up + x2
+
+        x8 = self.block_eight(x7_up)
+        x8_up = self.block_eight_up(x8)
+        x8_up = x8_up + x1
+        x9 = self.block_nine(x8_up)
+        # x9 = F.dropout3d(x9, p=0.5, training=True)
+        if self.has_dropout:
+            x9 = self.dropout(x9)
+        out = self.out_rec_conv_2(x9)
+        return out
+
+class TriupDecoder(nn.Module):
+    def __init__(self, n_classes=2, n_filters=16, normalization='batchnorm', has_dropout=False):
+        super(TriupDecoder, self).__init__()
+        # self.upsample = upsample(conv_in_ch, num_classes, upscale=upscale)
+        self.has_dropout = has_dropout
+
+        self.block_five = ConvBlock(3, n_filters * 16, n_filters * 16, normalization=normalization)
+        self.block_five_up = Upsampling(n_filters * 16, n_filters * 8, normalization=normalization)
+
+        self.block_six = ConvBlock(3, n_filters * 8, n_filters * 8, normalization=normalization)
+        self.block_six_up = Upsampling(n_filters * 8, n_filters * 4, normalization=normalization)
+
+        self.block_seven = ConvBlock(3, n_filters * 4, n_filters * 4, normalization=normalization)
+        self.block_seven_up = Upsampling(n_filters * 4, n_filters * 2, normalization=normalization)
+
+        self.block_eight = ConvBlock(2, n_filters * 2, n_filters * 2, normalization=normalization)
+        self.block_eight_up = Upsampling(n_filters * 2, n_filters, normalization=normalization)
+
+        self.block_nine = ConvBlock(1, n_filters, n_filters, normalization=normalization)
+        self.out_conv = nn.Conv3d(n_filters, n_classes, 1, padding=0)
+
+        self.dropout = nn.Dropout3d(p=0.5, inplace=False)
+
+    def forward(self, features):
+        # 预测分支3 使用插值上采样
+        x1 = features[0]
+        x2 = features[1]
+        x3 = features[2]
+        x4 = features[3]
+        x5 = features[4]
+
+        x5_up = self.block_five_up(x5)
+        x5_up = x5_up + x4
+
+        x6 = self.block_six(x5_up)
+        x6_up = self.block_six_up(x6)
+        x6_up = x6_up + x3
+
+        x7 = self.block_seven(x6_up)
+        x7_up = self.block_seven_up(x7)
+        x7_up = x7_up + x2
+
+        x8 = self.block_eight(x7_up)
+        x8_up = self.block_eight_up(x8)
+        x8_up = x8_up + x1
+        x9 = self.block_nine(x8_up)
+        # x9 = F.dropout3d(x9, p=0.5, training=True)
+        if self.has_dropout:
+            x9 = self.dropout(x9)
+        out = self.out_conv(x9)
+        return out
+
+
 class center_model(nn.Module):
 
-    def __init__(self, num_classes, ndf=64, n_channel=1):
+    def __init__(self, num_classes, ndf=64, out_channel=1):
         super(center_model, self).__init__()
         # downsample 16
         self.conv0 = nn.Conv3d(1, ndf, kernel_size=4, stride=2, padding=1)
@@ -337,6 +422,8 @@ class center_model(nn.Module):
         self.conv2 = nn.Conv3d(ndf*2, ndf*4, kernel_size=4, stride=2, padding=1)
         self.conv3 = nn.Conv3d(ndf*4, ndf*8, kernel_size=4, stride=2, padding=1)
         self.avgpool = nn.AvgPool3d((7, 7, 5))
+        # self.avgpool = nn.AvgPool3d((5, 7, 7))
+        # self.avgpool = nn.AvgPool3d((5, 16, 16))
         self.fc1 = nn.Linear(ndf*8, 512)
         self.fc2 = nn.Linear(512, num_classes)
 

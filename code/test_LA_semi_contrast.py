@@ -1,6 +1,6 @@
 ﻿import argparse
 import torch
-from networks.vnet_center import VNet
+from networks.E2DNet import VNet_Encoder, MainDecoder, TriupDecoder
 import h5py,cv2
 import math
 import nibabel as nib
@@ -54,14 +54,23 @@ with open( '../data/test.list', 'r') as f:
     image_list = [FLAGS.root_path + item.replace('\n', '') + "/mri_norm2.h5" for item in image_list]
 
 def test_calculate_metric(epoch_num):
-    net = VNet(n_channels=1, n_classes=num_classes, normalization=FLAGS.normalization,has_dropout=False,has_triup=False).cuda()
+    encoder= VNet_Encoder(n_channels=1,normalization='batchnorm', has_dropout=False).cuda()
+    seg_decoder1 = MainDecoder(n_classes=2, n_filters=16, normalization='batchnorm', has_dropout=False).cuda()
+    seg_decoder2 = MainDecoder(n_classes=2, n_filters=16, normalization='batchnorm', has_dropout=False).cuda()
+    # net = VNet(n_channels=1, n_classes=num_classes, normalization='instancenorm', has_dropout=False, has_rec=FLAGS.rec_de, has_sdm=FLAGS.sdm_pred).cuda()
+    # net = SegmentNet3D_Resnet().cuda()
     save_mode_path = os.path.join(snapshot_path, 'iter_' + str(epoch_num) + '.pth')
-    net.load_state_dict(torch.load(save_mode_path))
+    pre_trained_model = torch.load(save_mode_path)
+    encoder.load_state_dict(pre_trained_model['encoder_state_dict'])
+    seg_decoder1.load_state_dict(pre_trained_model['seg_decoder_1_state_dict'])
+    seg_decoder2.load_state_dict(pre_trained_model['seg_decoder_2_state_dict'])
     print("init weight from {}".format(save_mode_path))
-    net.eval()
+    encoder.eval()
+    seg_decoder1.eval()
+    seg_decoder2.eval()
 
 
-    avg_metric = dist_test_all_case(net, image_list, num_classes=num_classes,
+    avg_metric = dist_test_all_case(encoder,seg_decoder1, seg_decoder2, image_list, num_classes=num_classes,
                                         save_result=False, test_save_path=test_save_path,
                                         has_post=FLAGS.post)
 
@@ -69,7 +78,7 @@ def test_calculate_metric(epoch_num):
     return avg_metric
 
 
-def dist_test_all_case(net, image_list, num_classes, save_result=True, test_save_path=None, has_post=False):
+def dist_test_all_case(encoder,seg_decoder1, seg_decoder2, image_list, num_classes, save_result=True, test_save_path=None, has_post=False):
     total_metric = 0.0
     metric_dict = OrderedDict()
     metric_dict['name'] = list()
@@ -89,7 +98,7 @@ def dist_test_all_case(net, image_list, num_classes, save_result=True, test_save
         label = h5f['label'][:]
 
         with torch.no_grad():
-            prediction, score_map = test_single_case_patch(net, image, 18,18, 4, patch_shape , num_classes=num_classes)
+            prediction, score_map = test_single_case_patch(encoder,seg_decoder1, seg_decoder2, image, 18,18, 4, patch_shape , num_classes=num_classes)
             
         if np.sum(prediction) == 0:
             single_metric = (0,0,0,0,0,0)
@@ -129,7 +138,7 @@ def dist_test_all_case(net, image_list, num_classes, save_result=True, test_save
 
     return avg_metric
 
-def test_single_case_patch(net, image, stride_x,stride_y, stride_z, patch_size, num_classes=1):
+def test_single_case_patch(encoder,seg_decoder1, seg_decoder2, image, stride_x,stride_y, stride_z, patch_size, num_classes=1):
     w, h, d = image.shape
 
     # if the size of image is less than patch_size, then padding it
@@ -174,7 +183,9 @@ def test_single_case_patch(net, image, stride_x,stride_y, stride_z, patch_size, 
                 test_patch = np.expand_dims(np.expand_dims(test_patch,axis=0),axis=0).astype(np.float32)
                 test_patch = torch.from_numpy(test_patch).cuda()
 
-                y_1, y_2 = net(test_patch)
+                features = encoder(test_patch)
+                y_1 = seg_decoder1(features)
+                y_2 = seg_decoder2(features)
                 
                 y_1_soft = F.softmax(y_1, dim=1)
                 y_2_soft = F.softmax(y_2, dim=1)

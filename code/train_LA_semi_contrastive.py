@@ -19,7 +19,7 @@ import torch.backends.cudnn as cudnn
 from torch.nn import CosineSimilarity
 from torch.utils.data import DataLoader
 
-from networks.vnet_center import VNet, center_model
+from networks.E2DNet import VNet_Encoder, MainDecoder, TriupDecoder, center_model
 
 from utils import losses
 from dataloaders.la_heart import LAHeart, RandomCrop, RandomRotFlip, ToTensor, TwoStreamBatchSampler
@@ -87,8 +87,13 @@ if __name__ == "__main__":
 
     # Network definition
     # E2DNet for segmentation
-    model = VNet(n_channels=1, n_classes=num_classes, n_filters=16, normalization='batchnorm', has_dropout=True, has_ddecoder=True)
-    model.cuda()
+    encoder = VNet_Encoder(n_channels=1, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
+    seg_decoder_1 = MainDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
+    if args.has_triup:
+        seg_decoder_2 = TriupDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
+    else:
+        seg_decoder_2 = MainDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
+    seg_params = list(encoder.parameters())+list(seg_decoder_1.parameters())+list(seg_decoder_2.parameters())
     # classification model
     center_model = center_model(num_classes=num_classes,ndf=64)
     center_model.cuda()
@@ -111,9 +116,7 @@ if __name__ == "__main__":
         random.seed(args.seed+worker_id)
     trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=4, pin_memory=True,worker_init_fn=worker_init_fn)
 
-    model.train()
-
-    optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+    optimizer = optim.SGD(seg_params, lr=base_lr, momentum=0.9, weight_decay=0.0001)
     cos_sim = CosineSimilarity(dim=1,eps=1e-6)
 
     writer = SummaryWriter(snapshot_path+'/log')
@@ -132,7 +135,9 @@ if __name__ == "__main__":
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
 
-            outputs_1, outputs_2 = model(volume_batch)
+            features = encoder(volume_batch)
+            outputs_1 = seg_decoder_1(features)
+            outputs_2 = seg_decoder_2(features)
             outputs_soft_1 = F.softmax(outputs_1,dim=1)
             outputs_soft_2 = F.softmax(outputs_2,dim=1)
             
@@ -213,7 +218,9 @@ if __name__ == "__main__":
             ## save checkpoint
             if iter_num % 1000 == 0:
                 save_mode_path = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '.pth')
-                torch.save(model.state_dict(), save_mode_path)
+                torch.save({'encoder_state_dict':encoder.state_dict(),
+                            'seg_decoder_1_state_dict': seg_decoder_1.state_dict(),
+                            'seg_decoder_2_state_dict': seg_decoder_2.state_dict()}, save_mode_path)
                 logging.info("save model to {}".format(save_mode_path))
 
             if iter_num >= max_iterations:
