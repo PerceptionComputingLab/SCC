@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 
 from networks.E2DNet import VNet_Encoder, MainDecoder, TriupDecoder, center_model
 
-from utils import losses
+from utils import losses, ramps
 from dataloaders.la_heart import LAHeart, RandomCrop, RandomRotFlip, ToTensor, TwoStreamBatchSampler
 
 parser = argparse.ArgumentParser()
@@ -40,6 +40,9 @@ parser.add_argument('--has_triup', type=int,  default=True, help='whether adopte
 # loss
 parser.add_argument('--my_lambda', type=float,  default=1, help='balance factor to control contrastive loss')
 parser.add_argument('--tau', type=float,  default=1, help='temperature of the contrastive loss')
+# adopted this kind of ramp up weight for scc will further improve the performance
+parser.add_argument('--ramp_up_lambda', type=float,  default=1, help='balance factor to control contrastive loss in a ramp up manner')
+parser.add_argument('--rampup_param', type=float,  default=40.0, help='rampup parameters')
 
 parser.add_argument('--has_contrastive', type=int,  default=1, help='whether use contrative loss')
 parser.add_argument('--only_supervised', type=int,  default=0, help='whether use consist loss')
@@ -71,6 +74,9 @@ torch.cuda.manual_seed(args.seed)
 num_classes = 2
 patch_size = (112, 112, 80)
 
+def get_current_consistency_weight(epoch):
+    # Consistency ramp-up from https://arxiv.org/abs/1610.02242
+    return args.ramp_up_lambda * ramps.sigmoid_rampup(epoch, args.rampup_param)
 
 if __name__ == "__main__":
     ## make logger file
@@ -90,14 +96,15 @@ if __name__ == "__main__":
     encoder = VNet_Encoder(n_channels=1, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     seg_decoder_1 = MainDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     if args.has_triup:
-        # adopted this decoder, the performance will hit dice=0.9056, 59hd=6.74
+        # adopted this decoder, the performance will hit dice=0.9056, 95hd=6.74
+        # triup+ramp_up, dice=0.9106, 95hd=6.01
         seg_decoder_2 = TriupDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     else:
         seg_decoder_2 = MainDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     seg_params = list(encoder.parameters())+list(seg_decoder_1.parameters())+list(seg_decoder_2.parameters())
     # classification model
-    center_model = center_model(num_classes=num_classes,ndf=64)
-    center_model.cuda()
+    cls_model = center_model(num_classes=num_classes,ndf=64)
+    cls_model.cuda()
     db_train = LAHeart(base_dir=train_data_path,
                        split='train80', # train/val split
                        # num=args.labelnum,#16,
@@ -159,10 +166,10 @@ if __name__ == "__main__":
             
             if args.has_contrastive == 1:
                 
-                create_center_1_bg = center_model(outputs_1[:,0,...].unsqueeze(1))# 4,1,x,y,z->4,2
-                create_center_1_la = center_model(outputs_1[:,1,...].unsqueeze(1))
-                create_center_2_bg = center_model(outputs_2[:,0,...].unsqueeze(1))
-                create_center_2_la = center_model(outputs_2[:,1,...].unsqueeze(1))
+                create_center_1_bg = cls_model(outputs_1[:,0,...].unsqueeze(1))# 4,1,x,y,z->4,2
+                create_center_1_la = cls_model(outputs_1[:,1,...].unsqueeze(1))
+                create_center_2_bg = cls_model(outputs_2[:,0,...].unsqueeze(1))
+                create_center_2_la = cls_model(outputs_2[:,1,...].unsqueeze(1))
         
                 create_center_soft_1_bg = F.softmax(create_center_1_bg, dim=1)# dims(4,2)
                 create_center_soft_1_la = F.softmax(create_center_1_la, dim=1)
@@ -177,7 +184,11 @@ if __name__ == "__main__":
 
                 # cosine similarity
                 loss_contrast = losses.scc_loss(cos_sim, args.tau, lb_center_12_bg,lb_center_12_la, un_center_12_bg, un_center_12_la)
-                loss = supervised_loss + args.my_lambda * loss_contrast
+                if args.ramp_up_lambda!=0:
+                    consistency_weight = get_current_consistency_weight(iter_num//150)
+                    loss = supervised_loss + consistency_weight*loss_contrast
+                else:
+                    loss = supervised_loss + args.my_lambda * loss_contrast
                 
             if args.only_supervised==1:
                 print('only supervised')
