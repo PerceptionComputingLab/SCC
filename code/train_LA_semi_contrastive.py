@@ -35,7 +35,7 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--labelnum', type=int,  default=16, help='number of labeled data')
 parser.add_argument('--seed', type=int,  default=2022, help='random seed')
 parser.add_argument('--gpu', type=str,  default='3', help='GPU to use')
-
+parser.add_argument('--has_triup', type=int,  default=True, help='whether adopted triup decoder as auxiliary decoder')
 
 # loss
 parser.add_argument('--my_lambda', type=float,  default=1, help='balance factor to control contrastive loss')
@@ -90,6 +90,7 @@ if __name__ == "__main__":
     encoder = VNet_Encoder(n_channels=1, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     seg_decoder_1 = MainDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     if args.has_triup:
+        # adopted this decoder, the performance will hit dice=0.9056, 59hd=6.74
         seg_decoder_2 = TriupDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()
     else:
         seg_decoder_2 = MainDecoder(n_classes=num_classes, n_filters=16, normalization='batchnorm',has_dropout=True).cuda()

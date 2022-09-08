@@ -33,7 +33,7 @@ parser.add_argument('--normalization', type=str,  default='batchnorm', help='nor
 parser.add_argument('--epoch_num', type=int,  default='6000', help='checkpoint to use')
 parser.add_argument('--spacing', type=float,  default=1, help='voxel space')
 parser.add_argument('--post', type=int, default=True, help='whether use cca')
-
+parser.add_argument('--has_triup', type=int,  default=True, help='whether adopted triup decoder as auxiliary decoder')
 FLAGS = parser.parse_args()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = FLAGS.gpu
@@ -56,7 +56,10 @@ with open( '../data/test.list', 'r') as f:
 def test_calculate_metric(epoch_num):
     encoder= VNet_Encoder(n_channels=1,normalization='batchnorm', has_dropout=False).cuda()
     seg_decoder1 = MainDecoder(n_classes=2, n_filters=16, normalization='batchnorm', has_dropout=False).cuda()
-    seg_decoder2 = MainDecoder(n_classes=2, n_filters=16, normalization='batchnorm', has_dropout=False).cuda()
+    if FLAGS.has_triup:
+        seg_decoder2 = TriupDecoder(n_classes=num_classes, n_filters=16, normalization=FLAGS.normalization,has_dropout=True).cuda()
+    else:
+        seg_decoder2 = MainDecoder(n_classes=num_classes, n_filters=16, normalization=FLAGS.normalization,has_dropout=True).cuda()
     # net = VNet(n_channels=1, n_classes=num_classes, normalization='instancenorm', has_dropout=False, has_rec=FLAGS.rec_de, has_sdm=FLAGS.sdm_pred).cuda()
     # net = SegmentNet3D_Resnet().cuda()
     save_mode_path = os.path.join(snapshot_path, 'iter_' + str(epoch_num) + '.pth')
@@ -65,10 +68,7 @@ def test_calculate_metric(epoch_num):
     seg_decoder1.load_state_dict(pre_trained_model['seg_decoder_1_state_dict'])
     seg_decoder2.load_state_dict(pre_trained_model['seg_decoder_2_state_dict'])
     print("init weight from {}".format(save_mode_path))
-    encoder.eval()
-    seg_decoder1.eval()
-    seg_decoder2.eval()
-
+    
 
     avg_metric = dist_test_all_case(encoder,seg_decoder1, seg_decoder2, image_list, num_classes=num_classes,
                                         save_result=False, test_save_path=test_save_path,
@@ -178,6 +178,9 @@ def test_single_case_patch(encoder,seg_decoder1, seg_decoder2, image, stride_x,s
         for y in range(0, sy):
             ys = min(stride_y * y,hh-patch_size[1])
             for z in range(0, sz):
+                encoder.eval()
+                seg_decoder1.eval()
+                seg_decoder2.eval()
                 zs = min(stride_z * z, dd-patch_size[2])
                 test_patch = image[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]]
                 test_patch = np.expand_dims(np.expand_dims(test_patch,axis=0),axis=0).astype(np.float32)
